@@ -1,6 +1,8 @@
 #include <windows.h>
 #include<stdint.h>
 #include<Xinput.h>
+#include<mmdeviceapi.h>
+#include<Audioclient.h>
 
 #define global_variable static
 
@@ -22,7 +24,7 @@ struct bitmap_state {
 
 global_variable bitmap_state bitmap_buffer = {};
 
-// function pointers for xinput
+// Function pointers type definition for xinput funcs
 
 #define InputStateGetMacro(name) DWORD name(DWORD dwUserIndex, XINPUT_STATE* pState)
 typedef InputStateGetMacro(fp_x_input_get_state); 
@@ -97,7 +99,8 @@ static void Win32DisplayBufferToWindow(HDC device_context, RECT *window_rect) {
 	);
 }
 
-// XInput APIs
+// XInput Handling
+
 static void Win32LoadXInputLibrary() {
 	HMODULE xinput_lib_handle;
 	xinput_lib_handle = LoadLibraryA("Xinput1_4.dll");
@@ -116,7 +119,7 @@ static void Win32LoadXInputLibrary() {
 	
 }
 
-// temp param that modifies 
+// temp param that modifies animation buffer
 static void QueryXInput(u32 *x_offset, u32 *y_offset) {
 	for (DWORD controller_index = 0; controller_index < XUSER_MAX_COUNT; controller_index++) {
 		XINPUT_STATE state = {};
@@ -180,6 +183,32 @@ static void QueryXInput(u32 *x_offset, u32 *y_offset) {
 		}
 	}
 }
+
+// WASAPI sound funtions
+
+void Win32InitWasapi() {
+	// see https://learn.microsoft.com/en-us/windows/win32/coreaudio/rendering-a-stream
+	HRESULT hr;
+
+	IMMDeviceEnumerator* enumerator_ptr;
+	hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**) &enumerator_ptr);
+
+	IMMDevice *audio_device;
+	hr = enumerator_ptr->GetDefaultAudioEndpoint(eRender, eConsole, &audio_device);
+	if (hr != S_OK) {
+		return;
+	}
+
+	IAudioClient *audio_client;
+	hr = audio_device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, 0, (void**) &audio_client);
+	if (hr != S_OK) {
+		return;
+	}
+
+	//audio_client->Initialize();
+}
+
+// Windows entry point
 
 LRESULT CALLBACK Win32MainCallback(
 	HWND win_handle,
