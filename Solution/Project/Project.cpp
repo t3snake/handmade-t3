@@ -10,6 +10,7 @@ typedef uint32_t u32;
 typedef uint64_t u64;
 
 global_variable bool running;
+global_variable bool vibrating;
 
 struct bitmap_state {
 	BITMAPINFO info;
@@ -115,7 +116,8 @@ static void Win32LoadXInputLibrary() {
 	
 }
 
-static void QueryXInput() {
+// temp param that modifies 
+static void QueryXInput(u32 *x_offset, u32 *y_offset) {
 	for (DWORD controller_index = 0; controller_index < XUSER_MAX_COUNT; controller_index++) {
 		XINPUT_STATE state = {};
 
@@ -137,8 +139,39 @@ static void QueryXInput() {
 			bool isYPressed = (state.Gamepad.wButtons & XINPUT_GAMEPAD_Y);
 			bool isLBPressed = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER);
 			bool isRBPressed = (state.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER);
-			if (isAPressed) {
-				OutputDebugStringA("Yoooo");
+
+			short lstick_x_axis = state.Gamepad.sThumbLX;
+			short lstick_y_axis = state.Gamepad.sThumbLY;
+			short rstick_x_axis = state.Gamepad.sThumbRX;
+			short rstick_y_axis = state.Gamepad.sThumbRY;
+
+			byte lt_state = state.Gamepad.bLeftTrigger;
+			byte rt_state = state.Gamepad.bRightTrigger;
+
+
+			XINPUT_VIBRATION vibration = {};
+			if (isAPressed && !vibrating) { // dont set vibration if already vibrating
+				vibrating = 1;
+				vibration.wLeftMotorSpeed = (1 << 15);
+				vibration.wRightMotorSpeed = (1 << 15);
+				XInputSetStatePtr(controller_index, &vibration);
+			}
+			else if (vibrating) {
+				vibrating = 0;
+				XInputSetStatePtr(controller_index, &vibration); // set vibration to 0
+			}
+
+			if (lstick_x_axis < -(1 << 14)) {
+				(*x_offset)++;
+			}
+			if (lstick_x_axis > (1 << 14)) {
+				(*x_offset)--;
+			}
+			if (lstick_y_axis > (1 << 14)) {
+				(*y_offset)++;
+			}
+			if (lstick_y_axis < -(1 << 14)) {
+				(*y_offset)--;
 			}
 			break;
 		}
@@ -187,6 +220,58 @@ LRESULT CALLBACK Win32MainCallback(
 	case WM_ACTIVATEAPP: {
 
 	} break;
+	// case handling keyboard events
+	case WM_SYSKEYDOWN:
+	case WM_SYSKEYUP:
+	case WM_KEYDOWN:
+	case WM_KEYUP: {
+		// https://learn.microsoft.com/en-us/windows/win32/inputdev/about-keyboard-input#keystroke-message-flags
+		bool isAltPressed = (l_param & (1 << 29)) != 0; // 29th bit of lparam is context code which tells if alt was down or not 
+		int vk_code = w_param;
+		
+		switch (vk_code) {
+		case VK_UP: {
+
+		} break;
+		case VK_DOWN: {
+
+		} break;
+		case VK_LEFT: {
+
+		} break;
+		case VK_RIGHT: {
+
+		} break;
+		case VK_RETURN: { // Enter
+
+		} break;
+		case 'W': { // TODO fallthrough for VK_UP?
+
+		} break;
+		case 'A': {
+
+		} break;
+		case 'S': {
+
+		} break;
+		case 'D': {
+
+		} break;
+		case 'Q': {
+
+		} break;
+		case 'E': {
+
+		} break;
+		case VK_F4: {
+			if (isAltPressed) {
+				result = DefWindowProcA(win_handle, message, w_param, l_param); // handle alt f4
+			}
+		} break;
+		}
+	} break;
+
+
 	default: {
 		result = DefWindowProcA(win_handle, message, w_param, l_param);
 	}
@@ -211,6 +296,7 @@ int CALLBACK WinMain(
 	running = 1;
 
 	if (RegisterClassA(&window_class)) {
+
 		Win32LoadXInputLibrary();
 
 		HWND window_handle =
@@ -240,8 +326,10 @@ int CALLBACK WinMain(
 				DispatchMessageA(&message);
 			}
 
-			QueryXInput();
+			// Gamepad handling
+			QueryXInput(&x_offset, &y_offset);
 
+			// Drawing to screen > create buffer and blit it to screen
 			RECT client_area;
 			GetClientRect(window_handle, &client_area);
 			HDC device_context = GetDC(window_handle);
@@ -250,9 +338,6 @@ int CALLBACK WinMain(
 			Win32DisplayBufferToWindow(device_context, &client_area);
 
 			ReleaseDC(window_handle, device_context);
-			x_offset++;
-			y_offset++;
-
 		}
 	}
 }
