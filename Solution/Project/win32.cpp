@@ -1,28 +1,19 @@
 #include <windows.h>
-#include<stdint.h>
+
 #include<Xinput.h>
 #include<mmdeviceapi.h>
 #include<Audioclient.h>
 
-#define global_variable static
+#include<handmade.cpp>
 
-typedef uint8_t u8;
-typedef uint16_t u16;
-typedef uint32_t u32;
-typedef uint64_t u64;
+#define REFTIMES_PER_SEC  10000000
 
 global_variable bool running;
 global_variable bool vibrating;
 
-struct bitmap_state {
-	BITMAPINFO info;
-	void* memory;
-	int byte_per_pixel = 4;
-	int width;
-	int height;
-};
+global_variable BITMAPINFO bitmap_info;
 
-global_variable bitmap_state bitmap_buffer = {};
+global_variable BitmapState bitmap_buffer = {};
 
 // Function pointers type definition for xinput funcs
 
@@ -45,32 +36,19 @@ global_variable fp_x_input_set_state* XInputSetStatePtr = stub_x_input_set_fn; /
 
 // Painting functions
 
-static void animateCheckerPattern(int x_offset, int y_offset) {
-	u8* row = (u8*)bitmap_buffer.memory;
-	for (int y = 0; y < bitmap_buffer.height; y++) {
-		u32* pixel =(u32*) row;
-		for (int x = 0; x < bitmap_buffer.width; x++) {
-			u8 green_offset = x + x_offset;
-			u8 blue_offset = y + y_offset;
-			*(pixel++) = (green_offset << 8) | (blue_offset);
-		}
-		row = row + bitmap_buffer.width * bitmap_buffer.byte_per_pixel;
-	}
-}
-
 // DIB - Device Independant Bitmap
 static void Win32ResizeDIBSection(int width, int height) {
 	bitmap_buffer.height = height;
 	bitmap_buffer.width = width;
 
 	// initialize bitmap_info
-	bitmap_buffer.info = {};
-	bitmap_buffer.info.bmiHeader.biSize = sizeof(bitmap_buffer.info.bmiHeader);
-	bitmap_buffer.info.bmiHeader.biWidth = width;
-	bitmap_buffer.info.bmiHeader.biHeight = -height; // negative value: top down pitch
-	bitmap_buffer.info.bmiHeader.biPlanes = 1;
-	bitmap_buffer.info.bmiHeader.biCompression = BI_RGB;
-	bitmap_buffer.info.bmiHeader.biBitCount = 32;
+	bitmap_info = {};
+	bitmap_info.bmiHeader.biSize = sizeof(bitmap_info.bmiHeader);
+	bitmap_info.bmiHeader.biWidth = width;
+	bitmap_info.bmiHeader.biHeight = -height; // negative value: top down pitch
+	bitmap_info.bmiHeader.biPlanes = 1;
+	bitmap_info.bmiHeader.biCompression = BI_RGB;
+	bitmap_info.bmiHeader.biBitCount = 32;
 
 	// Free old memory
 	if (bitmap_buffer.memory) {
@@ -93,7 +71,7 @@ static void Win32DisplayBufferToWindow(HDC device_context, RECT *window_rect) {
 		0, 0, window_width, window_height,
 		0, 0, bitmap_buffer.width, bitmap_buffer.height,
 		bitmap_buffer.memory,
-		&bitmap_buffer.info,
+		&bitmap_info,
 		DIB_RGB_COLORS, // DIB_PAL_COLORS if we want to use fixed amount of colors
 		SRCCOPY
 	);
@@ -186,11 +164,11 @@ static void QueryXInput(u32 *x_offset, u32 *y_offset) {
 
 // WASAPI sound funtions
 
-void Win32InitWasapi() {
+static void Win32InitWasapi() {
 	// see https://learn.microsoft.com/en-us/windows/win32/coreaudio/rendering-a-stream
 	HRESULT hr;
 
-	IMMDeviceEnumerator* enumerator_ptr;
+	IMMDeviceEnumerator* enumerator_ptr = 0;
 	hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**) &enumerator_ptr);
 
 	IMMDevice *audio_device;
@@ -205,7 +183,31 @@ void Win32InitWasapi() {
 		return;
 	}
 
-	//audio_client->Initialize();
+	WAVEFORMATEX wave_format = {};
+
+	//audio_client->GetMixFormat(&wave_format);
+
+	wave_format.wFormatTag = WAVE_FORMAT_PCM;
+	wave_format.nChannels = 2;
+	wave_format.nSamplesPerSec = 48000;
+	wave_format.wBitsPerSample = 16;
+	wave_format.nBlockAlign = (wave_format.nChannels * wave_format.wBitsPerSample) / 8;
+	wave_format.nAvgBytesPerSec = (wave_format.nSamplesPerSec * wave_format.nBlockAlign);
+
+	
+
+	hr = audio_client->Initialize(
+		AUDCLNT_SHAREMODE_SHARED,
+		0,
+		1*REFTIMES_PER_SEC,
+		0,
+		&wave_format,
+		0
+	);
+
+	if (hr != S_OK) {
+		return;
+	}
 }
 
 // Windows entry point
@@ -256,7 +258,7 @@ LRESULT CALLBACK Win32MainCallback(
 	case WM_KEYUP: {
 		// https://learn.microsoft.com/en-us/windows/win32/inputdev/about-keyboard-input#keystroke-message-flags
 		bool isAltPressed = (l_param & (1 << 29)) != 0; // 29th bit of lparam is context code which tells if alt was down or not 
-		int vk_code = w_param;
+		u32 vk_code = w_param;
 		
 		switch (vk_code) {
 		case VK_UP: {
@@ -309,7 +311,7 @@ LRESULT CALLBACK Win32MainCallback(
 }
 
 
-int CALLBACK WinMain(
+int WinMain(
 	HINSTANCE instance,
 	HINSTANCE prev_instance,
 	LPSTR command_line,
@@ -324,9 +326,13 @@ int CALLBACK WinMain(
 
 	running = 1;
 
+	// Initialize COM for WASAPI call using CoCreateInstance
+	CoInitialize(0);
+
 	if (RegisterClassA(&window_class)) {
 
 		Win32LoadXInputLibrary();
+		Win32InitWasapi();
 
 		HWND window_handle =
 			CreateWindowExA(
@@ -358,15 +364,18 @@ int CALLBACK WinMain(
 			// Gamepad handling
 			QueryXInput(&x_offset, &y_offset);
 
-			// Drawing to screen > create buffer and blit it to screen
+			// Drawing to screen -> create buffer and blit it to screen
 			RECT client_area;
 			GetClientRect(window_handle, &client_area);
 			HDC device_context = GetDC(window_handle);
 
-			animateCheckerPattern(x_offset, y_offset);
+			PlatformGameRender(bitmap_buffer, x_offset, y_offset);
 			Win32DisplayBufferToWindow(device_context, &client_area);
 
 			ReleaseDC(window_handle, device_context);
 		}
 	}
+
+	// Initialize COM for WASAPI call using CoCreateInstance
+	CoUninitialize();
 }
