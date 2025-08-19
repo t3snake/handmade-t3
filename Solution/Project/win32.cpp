@@ -15,6 +15,16 @@ global_variable BITMAPINFO bitmap_info;
 
 global_variable BitmapState bitmap_buffer = {};
 
+struct AudioInterfaces {
+	IAudioClient* audio_client;
+	IAudioRenderClient* render_client;
+	u32 buffer_size;
+};
+
+global_variable AudioInterfaces audio_intfs;
+
+global_variable u32 buffer_write_ptr;
+
 // Function pointers type definition for xinput funcs
 
 #define InputStateGetMacro(name) DWORD name(DWORD dwUserIndex, XINPUT_STATE* pState)
@@ -177,15 +187,26 @@ static void Win32InitWasapi() {
 		return;
 	}
 
-	IAudioClient *audio_client;
-	hr = audio_device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, 0, (void**) &audio_client);
+	/*hr = enumerator_ptr->Release();
+	if (hr != S_OK) {
+		return;
+	}*/
+
+	hr = audio_device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, 0, (void**) &audio_intfs.audio_client);
 	if (hr != S_OK) {
 		return;
 	}
 
+	/*hr = audio_device->Release();
+	if (hr != S_OK) {
+		return;
+	}*/
+
 	WAVEFORMATEX wave_format = {};
 
-	//audio_client->GetMixFormat(&wave_format);
+	// TODO check wave format since doing it yourself doesnt seem to take any other samples/second other than 48000
+	// Should probably just get the format from audio client
+	// audio_client->GetMixFormat(&wave_format);
 
 	wave_format.wFormatTag = WAVE_FORMAT_PCM;
 	wave_format.nChannels = 2;
@@ -196,15 +217,67 @@ static void Win32InitWasapi() {
 
 	
 
-	hr = audio_client->Initialize(
+	hr = audio_intfs.audio_client->Initialize(
 		AUDCLNT_SHAREMODE_SHARED,
 		0,
-		1*REFTIMES_PER_SEC,
-		0,
+		2*REFTIMES_PER_SEC,
+		(AUDCLNT_STREAMFLAGS_RATEADJUST | 
+		AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | 
+		AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY ), // flags necessary to define own sample rate
 		&wave_format,
 		0
 	);
 
+	if (hr != S_OK) {
+		return;
+	}
+
+	hr = audio_intfs.audio_client->Start();
+	if (hr != S_OK) {
+		return;
+	}
+
+	hr = audio_intfs.audio_client->GetService(__uuidof(IAudioRenderClient), (void**) &audio_intfs.render_client);
+	if (hr != S_OK) {
+		return;
+	}
+
+	hr = audio_intfs.audio_client->GetBufferSize(&audio_intfs.buffer_size);
+	if (hr != S_OK) {
+		return;
+	}
+
+}
+
+static void Win32WriteSoundToBuffer() {
+	u32 padding;
+	audio_intfs.audio_client->GetCurrentPadding(&padding);
+	u32 safe_bytes_to_write = audio_intfs.buffer_size - padding;
+
+	byte* buffer_area;
+	audio_intfs.render_client->GetBuffer(safe_bytes_to_write, (byte**) &buffer_area);
+
+	for (u32 sample_index = 0; sample_index < safe_bytes_to_write; sample_index++) {
+
+	}
+
+	audio_intfs.render_client->ReleaseBuffer(safe_bytes_to_write, 0);
+}
+
+static void Win32CloseWasapi() {
+	HRESULT hr;
+
+	hr = audio_intfs.audio_client->Stop();
+	if (hr != S_OK) {
+		return;
+	}
+
+	hr = audio_intfs.render_client->Release();
+	if (hr != S_OK) {
+		return;
+	}
+
+	hr = audio_intfs.audio_client->Release();
 	if (hr != S_OK) {
 		return;
 	}
@@ -372,10 +445,13 @@ int WinMain(
 			PlatformGameRender(bitmap_buffer, x_offset, y_offset);
 			Win32DisplayBufferToWindow(device_context, &client_area);
 
+			Win32WriteSoundToBuffer();
+
 			ReleaseDC(window_handle, device_context);
 		}
 	}
 
 	// Initialize COM for WASAPI call using CoCreateInstance
 	CoUninitialize();
+	Win32CloseWasapi();
 }
