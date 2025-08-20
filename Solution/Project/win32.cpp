@@ -3,6 +3,7 @@
 #include<Xinput.h>
 #include<mmdeviceapi.h>
 #include<Audioclient.h>
+#include<math.h>
 
 #include<handmade.cpp>
 
@@ -18,12 +19,14 @@ global_variable BitmapState bitmap_buffer = {};
 struct AudioInterfaces {
 	IAudioClient* audio_client;
 	IAudioRenderClient* render_client;
-	u32 buffer_size;
+	uint32 buffer_size;
+	uint16 sine_frequency;
+	uint32 tone_volume;
 };
 
 global_variable AudioInterfaces audio_intfs;
 
-global_variable u32 buffer_write_ptr;
+global_variable uint32 buffer_write_ptr;
 
 // Function pointers type definition for xinput funcs
 
@@ -108,7 +111,7 @@ static void Win32LoadXInputLibrary() {
 }
 
 // temp param that modifies animation buffer
-static void QueryXInput(u32 *x_offset, u32 *y_offset) {
+static void QueryXInput(uint32 *x_offset, uint32 *y_offset) {
 	for (DWORD controller_index = 0; controller_index < XUSER_MAX_COUNT; controller_index++) {
 		XINPUT_STATE state = {};
 
@@ -187,20 +190,14 @@ static void Win32InitWasapi() {
 		return;
 	}
 
-	/*hr = enumerator_ptr->Release();
-	if (hr != S_OK) {
-		return;
-	}*/
+	enumerator_ptr->Release();
 
 	hr = audio_device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, 0, (void**) &audio_intfs.audio_client);
 	if (hr != S_OK) {
 		return;
 	}
 
-	/*hr = audio_device->Release();
-	if (hr != S_OK) {
-		return;
-	}*/
+	audio_device->Release();
 
 	WAVEFORMATEX wave_format = {};
 
@@ -215,24 +212,17 @@ static void Win32InitWasapi() {
 	wave_format.nBlockAlign = (wave_format.nChannels * wave_format.wBitsPerSample) / 8;
 	wave_format.nAvgBytesPerSec = (wave_format.nSamplesPerSec * wave_format.nBlockAlign);
 
-	
-
 	hr = audio_intfs.audio_client->Initialize(
 		AUDCLNT_SHAREMODE_SHARED,
-		0,
+		(AUDCLNT_STREAMFLAGS_RATEADJUST |
+		AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
+		AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY), // flags necessary to define own sample rate
 		2*REFTIMES_PER_SEC,
-		(AUDCLNT_STREAMFLAGS_RATEADJUST | 
-		AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | 
-		AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY ), // flags necessary to define own sample rate
+		0, 
 		&wave_format,
 		0
 	);
 
-	if (hr != S_OK) {
-		return;
-	}
-
-	hr = audio_intfs.audio_client->Start();
 	if (hr != S_OK) {
 		return;
 	}
@@ -247,21 +237,32 @@ static void Win32InitWasapi() {
 		return;
 	}
 
+	buffer_write_ptr = 0;
+	audio_intfs.tone_volume = 3000;
+	audio_intfs.sine_frequency = 220;
 }
 
 static void Win32WriteSoundToBuffer() {
-	u32 padding;
+	uint32 padding;
 	audio_intfs.audio_client->GetCurrentPadding(&padding);
-	u32 safe_bytes_to_write = audio_intfs.buffer_size - padding;
+	uint32 safe_frames_to_write = audio_intfs.buffer_size - padding;
 
-	byte* buffer_area;
-	audio_intfs.render_client->GetBuffer(safe_bytes_to_write, (byte**) &buffer_area);
+	uint16* buffer_area;
+	audio_intfs.render_client->GetBuffer(safe_frames_to_write, (byte**) &buffer_area);
 
-	for (u32 sample_index = 0; sample_index < safe_bytes_to_write; sample_index++) {
+	for (uint32 sample_index = 0; sample_index < safe_frames_to_write; sample_index++) {
+		uint32 pos_in_buffer = buffer_write_ptr % audio_intfs.buffer_size;
+		// 2 * PI * freq * time + phase
+		float amp = sinf(2 * 3.14 * audio_intfs.sine_frequency * pos_in_buffer);
+		uint16 y = (uint16)(amp * audio_intfs.tone_volume);
 
+		buffer_area[sample_index++] = y;
+		buffer_area[sample_index++] = y;
+
+		buffer_write_ptr++;
 	}
 
-	audio_intfs.render_client->ReleaseBuffer(safe_bytes_to_write, 0);
+	audio_intfs.render_client->ReleaseBuffer(safe_frames_to_write, 0);
 }
 
 static void Win32CloseWasapi() {
@@ -331,7 +332,7 @@ LRESULT CALLBACK Win32MainCallback(
 	case WM_KEYUP: {
 		// https://learn.microsoft.com/en-us/windows/win32/inputdev/about-keyboard-input#keystroke-message-flags
 		bool isAltPressed = (l_param & (1 << 29)) != 0; // 29th bit of lparam is context code which tells if alt was down or not 
-		u32 vk_code = w_param;
+		uint32 vk_code = w_param;
 		
 		switch (vk_code) {
 		case VK_UP: {
@@ -423,8 +424,23 @@ int WinMain(
 				0
 			);
 
-		u32 x_offset = 0;
-		u32 y_offset = 0;
+		uint32 x_offset = 0;
+		uint32 y_offset = 0;
+
+		// Initial fill of buffer
+		Win32WriteSoundToBuffer();
+
+		HRESULT hr = audio_intfs.audio_client->Reset();
+		if (hr != S_OK) {
+			OutputDebugStringA("Failed reset of wasapi");
+			return 1;
+		}
+
+		hr = audio_intfs.audio_client->Start();
+		if (hr != S_OK) {
+			OutputDebugStringA("Failed starting wasapi");
+			return 1;
+		}
 
 		while (running) {
 			MSG message;
